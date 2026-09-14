@@ -1,0 +1,16 @@
+FROM scratch
+
+ARG SOURCE_COMMIT
+ARG UPSTREAM_COMMIT
+ARG VERSION
+
+LABEL org.opencontainers.image.source="https://github.com/z0rgoyok/rustdesk-server" \
+      org.opencontainers.image.revision="$SOURCE_COMMIT" \
+      org.opencontainers.image.version="$VERSION" \
+      io.neiro.upstream.revision="$UPSTREAM_COMMIT"
+
+COPY --chmod=0755 dist/hbbs /usr/local/bin/hbbs
+COPY --chmod=0755 dist/hbbr /usr/local/bin/hbbr
+
+WORKDIR /data
+VOLUME ["/data"]

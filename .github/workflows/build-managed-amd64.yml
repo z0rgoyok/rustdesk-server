@@ -1,0 +1,79 @@
+name: Build managed amd64 image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+env:
+  IMAGE_NAME: ghcr.io/z0rgoyok/rustdesk-server
+  IMAGE_TAG: 1.1.16-z0rgoyok.1
+  UPSTREAM_COMMIT: 73523b31cfd25d77dee862e6fc9f5e1fb5e485ef
+  RUST_TOOLCHAIN: 1.90.0
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pinned source and submodules
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          submodules: recursive
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes autoconf automake clang cmake libtool musl-tools pkg-config protobuf-compiler
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "$TARGET"
+          rustc "+$RUST_TOOLCHAIN" --version
+
+      - name: Build static server binaries
+        run: |
+          cargo "+$RUST_TOOLCHAIN" build --locked --release --all-features --target "$TARGET"
+          install -d dist
+          install -m 0755 "target/$TARGET/release/hbbs" dist/hbbs
+          install -m 0755 "target/$TARGET/release/hbbr" dist/hbbr
+          sha256sum dist/hbbs dist/hbbr
+
+      - name: Log in to the managed registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and publish immutable image
+        id: image
+        run: |
+          docker buildx create --use
+          docker buildx build \
+            --platform linux/amd64 \
+            --file docker/ManagedDockerfile \
+            --build-arg SOURCE_COMMIT="$GITHUB_SHA" \
+            --build-arg UPSTREAM_COMMIT="$UPSTREAM_COMMIT" \
+            --build-arg VERSION="$IMAGE_TAG" \
+            --provenance=mode=max \
+            --sbom=true \
+            --tag "$IMAGE_NAME:$IMAGE_TAG" \
+            --metadata-file build-metadata.json \
+            --push \
+            .
+          image_digest=$(jq -r ".\"containerimage.digest\"" build-metadata.json)
+          test -n "$image_digest"
+          test "$image_digest" != null
+          printf 'digest=%s\n' "$image_digest" >> "$GITHUB_OUTPUT"
+          printf '### Image\n\n%s@%s\n' "$IMAGE_NAME" "$image_digest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attest published image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
